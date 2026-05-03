@@ -482,10 +482,21 @@ let gameState = null;
 // Socket setup
 // ─────────────────────────────────────────────────────────────────────────────
 function connectSocket() {
-  socket = io();
+  const serverUrl = window.location.origin;
+  socket = io(serverUrl, {
+    transports: ['polling', 'websocket'],
+    reconnection: true,
+    reconnectionAttempts: 5,
+    reconnectionDelay: 1000,
+  });
   myId = null;
 
-  socket.on('connect', () => { myId = socket.id; });
+  socket.on('connect', () => { myId = socket.id; console.log('Connected:', myId); });
+
+  socket.on('connect_error', (err) => {
+    console.error('Connection error:', err.message);
+    document.getElementById('lobby-error').textContent = 'Connection failed: ' + err.message;
+  });
 
   socket.on('room_update', data => {
     roomData = data;
