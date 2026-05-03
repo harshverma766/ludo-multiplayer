@@ -5,22 +5,28 @@ const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
+
 const io = new Server(server, {
-  cors: { origin: '*', methods: ['GET', 'POST'] },
-  transports: ['polling', 'websocket'],
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST'],
+    credentials: false,
+  },
+  transports: ['polling'],
   pingTimeout: 60000,
   pingInterval: 25000,
 });
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   next();
 });
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ── Game constants ───────────────────────────────────────────────────────────
+// ── Game constants ──────────────────────────────────────────────────────────
 const COLORS = ['red', 'blue', 'green', 'yellow'];
-const COLOR_NAMES = { red: 'Red', blue: 'Blue', green: 'Green', yellow: 'Yellow' };
 
 function buildPath() {
   const p = [];
@@ -48,8 +54,8 @@ const HOME_COLS = {
 };
 const SAFE_SET = new Set([0, 8, 13, 21, 26, 34, 39, 47]);
 
-// ── Rooms ────────────────────────────────────────────────────────────────────
-const rooms = {}; // roomCode -> room
+// ── Rooms ───────────────────────────────────────────────────────────────────
+const rooms = {};
 
 function makeRoomCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -59,25 +65,14 @@ function makeRoomCode() {
 }
 
 function initGameState(players) {
-  // players: [{id, name, color}]
   const pawns = {};
   players.forEach(p => {
     pawns[p.color] = [
-      { id: 0, pos: -1 },
-      { id: 1, pos: -1 },
-      { id: 2, pos: -1 },
-      { id: 3, pos: -1 },
+      { id: 0, pos: -1 }, { id: 1, pos: -1 },
+      { id: 2, pos: -1 }, { id: 3, pos: -1 },
     ];
   });
-  return {
-    players,
-    pawns,
-    currentIdx: 0,
-    phase: 'roll',  // roll | move
-    dice: null,
-    winner: null,
-    log: [],
-  };
+  return { players, pawns, currentIdx: 0, phase: 'roll', dice: null, winner: null, log: [] };
 }
 
 function getMovablePawns(gs, color, dice) {
@@ -93,13 +88,8 @@ function getMovablePawns(gs, color, dice) {
 function applyMove(gs, color, pawnId, dice) {
   const pawn = gs.pawns[color].find(p => p.id === pawnId);
   if (!pawn) return { captured: false };
-
-  if (pawn.pos === -1 && dice === 6) {
-    pawn.pos = 0;
-  } else {
-    pawn.pos += dice;
-  }
-
+  if (pawn.pos === -1 && dice === 6) { pawn.pos = 0; }
+  else { pawn.pos += dice; }
   let captured = false;
   if (pawn.pos < 52) {
     const absIdx = (START_IDX[color] + pawn.pos) % 52;
@@ -109,10 +99,7 @@ function applyMove(gs, color, pawnId, dice) {
         opPawns.forEach(op => {
           if (op.pos < 0 || op.pos >= 52) return;
           const opAbs = (START_IDX[opColor] + op.pos) % 52;
-          if (opAbs === absIdx) {
-            op.pos = -1;
-            captured = true;
-          }
+          if (opAbs === absIdx) { op.pos = -1; captured = true; }
         });
       });
     }
@@ -132,6 +119,31 @@ function addLog(gs, msg) {
   if (gs.log.length > 20) gs.log.pop();
 }
 
+function advanceTurn(gs) {
+  gs.currentIdx = (gs.currentIdx + 1) % gs.players.length;
+  addLog(gs, `${gs.players[gs.currentIdx].name}'s turn.`);
+}
+
+function finishMove(gs, current, dice) {
+  const winner = checkWinner(gs);
+  if (winner) {
+    gs.winner = winner;
+    const winPlayer = gs.players.find(p => p.color === winner);
+    addLog(gs, `🏆 ${winPlayer?.name} wins!`);
+    gs.phase = 'roll';
+    return;
+  }
+  if (dice === 6) {
+    gs.phase = 'roll'; gs.dice = null;
+    addLog(gs, `${current.name} rolled 6 — bonus turn!`);
+  } else {
+    gs.phase = 'roll'; gs.dice = null;
+    advanceTurn(gs);
+  }
+}
+
+function sanitize(room) { return JSON.parse(JSON.stringify(room)); }
+
 // ── Socket.io ────────────────────────────────────────────────────────────────
 io.on('connection', socket => {
   console.log('connected:', socket.id);
@@ -139,13 +151,10 @@ io.on('connection', socket => {
   socket.on('create_room', ({ name }, cb) => {
     let code;
     do { code = makeRoomCode(); } while (rooms[code]);
-
     rooms[code] = {
-      code,
-      host: socket.id,
+      code, host: socket.id,
       players: [{ id: socket.id, name, color: null, ready: false }],
-      state: null,
-      started: false,
+      state: null, started: false,
     };
     socket.join(code);
     socket.data.room = code;
@@ -160,7 +169,6 @@ io.on('connection', socket => {
     if (room.started) return cb({ ok: false, error: 'Game already started' });
     if (room.players.length >= 4) return cb({ ok: false, error: 'Room is full' });
     if (room.players.find(p => p.id === socket.id)) return cb({ ok: false, error: 'Already in room' });
-
     room.players.push({ id: socket.id, name, color: null, ready: false });
     socket.join(code);
     socket.data.room = code;
@@ -185,7 +193,6 @@ io.on('connection', socket => {
     if (room.players.length < 2) return socket.emit('error_msg', 'Need at least 2 players');
     const unready = room.players.filter(p => !p.ready || !p.color);
     if (unready.length) return socket.emit('error_msg', 'All players must pick a color');
-
     room.started = true;
     room.state = initGameState(room.players.map(p => ({ id: p.id, name: p.name, color: p.color })));
     const current = room.state.players[0];
@@ -201,27 +208,18 @@ io.on('connection', socket => {
     const current = gs.players[gs.currentIdx];
     if (current.id !== socket.id) return socket.emit('error_msg', 'Not your turn');
     if (gs.phase !== 'roll') return;
-
     const dice = Math.floor(Math.random() * 6) + 1;
     gs.dice = dice;
-
     const movable = getMovablePawns(gs, current.color, dice);
     addLog(gs, `${current.name} rolled ${dice}.`);
-
     if (movable.length === 0) {
       addLog(gs, `${current.name} has no moves.`);
-      if (dice === 6) {
-        // rolled 6 but no moves (all out + all blocked) — skip
-      }
-      // advance turn
-      gs.phase = 'roll';
-      gs.dice = null;
+      gs.phase = 'roll'; gs.dice = null;
       if (dice !== 6) advanceTurn(gs);
       io.to(room.code).emit('state_update', sanitize(room));
     } else {
       gs.phase = 'move';
       if (movable.length === 1) {
-        // auto move
         const { captured } = applyMove(gs, current.color, movable[0].id, dice);
         if (captured) addLog(gs, `${current.name} captured a pawn!`);
         finishMove(gs, current, dice);
@@ -240,7 +238,6 @@ io.on('connection', socket => {
     const current = gs.players[gs.currentIdx];
     if (current.id !== socket.id) return;
     if (gs.phase !== 'move') return;
-
     const { captured } = applyMove(gs, current.color, pawnId, gs.dice);
     if (captured) addLog(gs, `${current.name} captured a pawn!`);
     finishMove(gs, current, gs.dice);
@@ -252,51 +249,17 @@ io.on('connection', socket => {
     if (!code || !rooms[code]) return;
     const room = rooms[code];
     room.players = room.players.filter(p => p.id !== socket.id);
-    if (room.players.length === 0) {
-      delete rooms[code];
-      return;
-    }
+    if (room.players.length === 0) { delete rooms[code]; return; }
     if (room.host === socket.id) room.host = room.players[0].id;
     if (room.started && room.state) {
       room.state.players = room.state.players.filter(p => p.id !== socket.id);
       addLog(room.state, `A player disconnected.`);
-      if (room.state.players.length < 2) {
-        room.state.winner = room.state.players[0]?.color || 'none';
-      }
+      if (room.state.players.length < 2) room.state.winner = room.state.players[0]?.color || 'none';
     }
     io.to(code).emit('room_update', sanitize(room));
     if (room.started) io.to(code).emit('state_update', sanitize(room));
   });
 });
-
-function advanceTurn(gs) {
-  gs.currentIdx = (gs.currentIdx + 1) % gs.players.length;
-  addLog(gs, `${gs.players[gs.currentIdx].name}'s turn.`);
-}
-
-function finishMove(gs, current, dice) {
-  const winner = checkWinner(gs);
-  if (winner) {
-    gs.winner = winner;
-    const winPlayer = gs.players.find(p => p.color === winner);
-    addLog(gs, `🏆 ${winPlayer?.name} wins!`);
-    gs.phase = 'roll';
-    return;
-  }
-  if (dice === 6) {
-    gs.phase = 'roll';
-    gs.dice = null;
-    addLog(gs, `${current.name} rolled 6 — bonus turn!`);
-  } else {
-    gs.phase = 'roll';
-    gs.dice = null;
-    advanceTurn(gs);
-  }
-}
-
-function sanitize(room) {
-  return JSON.parse(JSON.stringify(room));
-}
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Ludo server running on http://localhost:${PORT}`));

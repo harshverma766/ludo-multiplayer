@@ -484,7 +484,7 @@ let gameState = null;
 function connectSocket() {
   const serverUrl = window.location.origin;
   socket = io(serverUrl, {
-    transports: ['polling', 'websocket'],
+    transports: ['polling'],
     reconnection: true,
     reconnectionAttempts: 5,
     reconnectionDelay: 1000,
